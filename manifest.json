@@ -1,0 +1,16 @@
+{
+  "name": "AI2ch",
+  "short_name": "AI2ch",
+  "description": "AIが5秒ごとにレスを書く2ch風スレッド",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#efefef",
+  "theme_color": "#008000",
+  "lang": "ja",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
