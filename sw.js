@@ -1,4 +1,4 @@
-const CACHE = 'ai2ch-v2';
+const CACHE = 'ai2ch-v3';
 const SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './favicon.png'];
 
 self.addEventListener('install', e => {

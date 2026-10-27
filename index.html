@@ -11,7 +11,7 @@
 <meta name="apple-mobile-web-app-title" content="AI2ch">
 
 <style>
-body{background:#efefef;color:#000;font-family:"MS PGothic","IPAMonaPGothic","Mona",monospace;font-size:15px;margin:0;padding:10px}
+body{background:#efefef;color:#000;font-family:"MS PGothic","IPAMonaPGothic","Mona",monospace;font-size:15px;margin:0;padding:10px 10px 70px}
 .t{color:#f00;font-size:20px;font-weight:bold;margin:12px 0}
 .r{margin:14px 0}
 .hd{color:#080}
@@ -23,6 +23,9 @@ body{background:#efefef;color:#000;font-family:"MS PGothic","IPAMonaPGothic","Mo
 input,button{font-size:14px;margin:2px}
 #title{width:60%}
 small{color:#666}
+#post{position:sticky;bottom:0;background:#efefef;padding:8px 0;border-top:1px solid #bbb}
+#msg{width:72%}
+.no{cursor:pointer}
 #st{color:#666;margin:8px 0}
 @media (prefers-reduced-motion:reduce){.new{animation:none}}
 </style></head><body>
@@ -34,11 +37,12 @@ small{color:#666}
 <small>5秒に1レス流れる</small>
 <div id="st"></div>
 <div id="out"></div>
+<div id="post"><input id="msg" placeholder="書き込む(番号タップで安価)" onkeydown="if(event.key==='Enter')AI2.post()"><button onclick="AI2.post()">書き込む</button></div>
 
 <script>
 (() => {
 const KEY = 'AQ.Ab8RN6JTn1S2dQuQWJjTk-MaawPWJfMZRHpeRBF4OhDDOvIs-A'; // 捨てキー、漏れて当然
-const MODEL = 'gemini-flash-lite-latest';
+const MODEL = 'gemini-2.5-flash';
 const INTERVAL = 5000;   // 1レスの間隔(ms)
 const BATCH = 25;        // 1回のAPI呼び出しで作るレス数
 const MAX_POSTS = 100;   // 枠節約の上限
@@ -89,31 +93,44 @@ function stamp(t){
 
 function setStatus(s){ $('st').textContent = s; }
 
-async function fetchBatch(){
+async function callApi(prompt, minimal){
+  const vertex = KEY.startsWith('AQ.');
+  const url = vertex
+    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${MODEL}:generateContent?key=${encodeURIComponent(KEY)}`
+    : `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+  const headers = {'Content-Type':'application/json'};
+  if(!vertex) headers['x-goog-api-key'] = KEY;
+  const gc = {responseMimeType:'application/json'};
+  if(!minimal){ gc.temperature = 1.1; gc.thinkingConfig = {thinkingBudget:0}; }
+  const res = await fetch(url, {method:'POST', headers, body:JSON.stringify({
+    systemInstruction:{parts:[{text:SYSTEM}]},
+    contents:[{role:'user', parts:[{text:prompt}]}],
+    generationConfig:gc})});
+  const data = await res.json().catch(() => ({}));
+  return {res, data, vertex};
+}
+
+async function fetchBatch(note){
   const myGen = gen;
   fetching = true;
-  const last = shown.slice(-12).map(p => `${p.no}[${p.who}] ${p.text}`).join('\n');
+  const last = shown.slice(-12).map(p => `${p.no}[${p.who<0?'ユーザー':p.who}] ${p.text}`).join('\n');
   const prompt = `スレタイ: ${title}\n`
-    + (shown.length ? `今あるレスは${shown.length}番まで。直前の流れ:\n${last}\n\n${shown.length+1}番から${BATCH}件、続きを書け。`
+    + (shown.length ? `今あるレスは${shown.length}番まで。直前の流れ:\n${last}\n\n`
+                      + (note || '') + `${shown.length+1}番から${BATCH}件、続きを書け。`
                     : `1番から${BATCH}件書け。1番はwho=0のイッチによる >>1 の本文(スレ立て時のひとこと)。`);
   try{
     if(KEY === 'ここにキー') throw new Error('index.htmlの KEY にAPIキーを入れてな');
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      {method:'POST',
-       headers:{'Content-Type':'application/json','x-goog-api-key':KEY},
-       body:JSON.stringify({
-         systemInstruction:{parts:[{text:SYSTEM}]},
-         contents:[{parts:[{text:prompt}]}],
-         generationConfig:{responseMimeType:'application/json', temperature:1.1,
-                           thinkingConfig:{thinkingBudget:0}}
-       })});
-    const data = await res.json();
-    if(!res.ok){
-      if(res.status===429) throw new Error('枠切れ。時間置いてな');
-      throw new Error(data.error?.message || res.status);
+    let r = await callApi(prompt, false);
+    if(r.res.status === 400) r = await callApi(prompt, true);   // 設定を減らして再試行
+    if(!r.res.ok){
+      if(r.res.status === 429) throw new Error('枠切れ。時間置いてな');
+      const e = r.data.error || {};
+      throw new Error(`${e.message || r.res.status}${e.status ? ' ('+e.status+')' : ''}${r.vertex ? ' [Vertex]' : ''}`);
     }
-    let txt = data.candidates[0].content.parts[0].text.replace(/```json|```/g,'').trim();
+    const part = r.data.candidates && r.data.candidates[0] && r.data.candidates[0].content
+                 && r.data.candidates[0].content.parts && r.data.candidates[0].content.parts[0];
+    if(!part || !part.text) throw new Error('空の応答(フィルタかも)。もう一回やってみて');
+    let txt = part.text.replace(/```json|```/g,'').trim();
     txt = txt.slice(txt.indexOf('['), txt.lastIndexOf(']')+1);
     const arr = JSON.parse(txt);
     if(myGen !== gen) return;
@@ -125,6 +142,20 @@ async function fetchBatch(){
   }
 }
 
+function addPost(p){
+  const no = shown.length + 1;
+  shown.push({no, who:p.who, text:p.text});
+  const body = esc(p.text).replace(/&gt;&gt;(\d+)(-\d+)?/g, '<span class="a">&gt;&gt;$1$2</span>');
+  const id = ids[p.who < 0 ? 8 : p.who];
+  const div = document.createElement('div');
+  div.className = 'r new';
+  div.innerHTML = `<div class="hd"><span class="no" data-no="${no}">${no}</span> <span class="n">風吹けば名無し</span>：${stamp(new Date())} ID:${id}0</div><div class="b">${body}</div>`;
+  $('out').appendChild(div);
+  window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
+  setStatus(`${no}レス`);
+  return no;
+}
+
 function tick(){
   if(queue.length < 6 && !fetching && shown.length + queue.length < MAX_POSTS) fetchBatch();
   if(!queue.length){
@@ -133,18 +164,21 @@ function tick(){
     return;
   }
   const p = queue.shift();
-  const no = shown.length + 1;
-  const post = {no, who:p.who, text:p.text};
-  shown.push(post);
-  const body = esc(p.text).replace(/&gt;&gt;(\d+)(-\d+)?/g, '<span class="a">&gt;&gt;$1$2</span>');
-  const name = '風吹けば名無し';
-  const div = document.createElement('div');
-  div.className = 'r new';
-  div.innerHTML = `<div class="hd">${no} <span class="n">${name}</span>：${stamp(new Date())} ID:${ids[p.who]}0</div><div class="b">${body}</div>`;
-  $('out').appendChild(div);
-  window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
-  setStatus(`${no}レス`);
+  const no = addPost(p);
   if(no >= MAX_POSTS) finish();
+}
+
+function userPost(){
+  const text = $('msg').value.trim();
+  if(!text) return;
+  if(!title) return alert('先にスレ立てしてな');
+  if(ended) return alert('このスレは終了や');
+  const no = addPost({who:-1, text});
+  $('msg').value = '';
+  // 先読み分を捨てて、書き込みに反応する続きを作り直す
+  gen++; fetching = false; queue = [];
+  fetchBatch(`たった今、ユーザーが${no}番に書き込んだ。次の数レスはその書き込み(>>${no})に反応すること(安価を付けて拾う、ツッコむ、乗る、煽る)。その後は流れに戻る。\n`)
+    .then(() => { if(!timer && !ended && queue.length) timer = setInterval(tick, INTERVAL); });
 }
 
 function finish(){
@@ -162,7 +196,7 @@ function startThread(){
   if(!t) return alert('スレタイを入れてな');
   stopThread(true); gen++;
   title = t; shown = []; queue = []; fetching = false; ended = false;
-  ids = Array.from({length:8}, rid);
+  ids = Array.from({length:9}, rid);
   $('out').innerHTML = `<div class="t">${esc(title)}</div>`;
   setStatus('スレ立て中…');
   fetchBatch().then(() => {
@@ -172,7 +206,8 @@ function startThread(){
   });
 }
 if('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
-window.AI2 = {start:startThread, stop:() => stopThread()};
+$('out').addEventListener('click', e => { const n = e.target.dataset && e.target.dataset.no; if(n){ const m = $('msg'); m.value += '>>' + n + ' '; m.focus(); } });
+window.AI2 = {start:startThread, stop:() => stopThread(), post:userPost};
 })();
 </script>
 </body></html>
