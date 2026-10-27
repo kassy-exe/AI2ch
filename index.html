@@ -42,7 +42,7 @@ small{color:#666}
 <script>
 (() => {
 const KEY = 'AQ.Ab8RN6JTn1S2dQuQWJjTk-MaawPWJfMZRHpeRBF4OhDDOvIs-A'; // 捨てキー、漏れて当然
-const MODEL = 'gemini-flash-lite-latest';
+const MODEL = 'gemini-2.5-flash';
 const INTERVAL = 5000;   // 1レスの間隔(ms)
 const BATCH = 25;        // 1回のAPI呼び出しで作るレス数
 const MAX_POSTS = 100;   // 枠節約の上限
@@ -93,21 +93,36 @@ function stamp(t){
 
 function setStatus(s){ $('st').textContent = s; }
 
-async function callApi(prompt, minimal){
-  const vertex = KEY.startsWith('AQ.');
-  const url = vertex
-    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${MODEL}:generateContent?key=${encodeURIComponent(KEY)}`
-    : `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
-  const headers = {'Content-Type':'application/json'};
-  if(!vertex) headers['x-goog-api-key'] = KEY;
-  const gc = {responseMimeType:'application/json'};
-  if(!minimal){ gc.temperature = 1.1; gc.thinkingConfig = {thinkingBudget:0}; }
-  const res = await fetch(url, {method:'POST', headers, body:JSON.stringify({
-    systemInstruction:{parts:[{text:SYSTEM}]},
-    contents:[{role:'user', parts:[{text:prompt}]}],
-    generationConfig:gc})});
+const MODELS = [MODEL, 'gemini-flash-latest', 'gemini-2.0-flash'];
+
+async function callApi(prompt, model, level){
+  // level 0: 全部入り / 1: temperature・thinking無し / 2: さらにsystemInstruction・JSON指定も無し
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const body = {contents:[{role:'user', parts:[{text: level >= 2 ? SYSTEM + '\n\n' + prompt : prompt}]}]};
+  if(level < 2) body.systemInstruction = {parts:[{text:SYSTEM}]};
+  const gc = {};
+  if(level < 2) gc.responseMimeType = 'application/json';
+  if(level < 1){ gc.temperature = 1.1; gc.thinkingConfig = {thinkingBudget:0}; }
+  if(Object.keys(gc).length) body.generationConfig = gc;
+  const res = await fetch(url, {method:'POST',
+    headers:{'Content-Type':'application/json','x-goog-api-key':KEY},
+    body:JSON.stringify(body)});
   const data = await res.json().catch(() => ({}));
-  return {res, data, vertex};
+  return {res, data};
+}
+
+async function callWithFallback(prompt){
+  let last = null;
+  for(const model of MODELS){
+    for(let level = 0; level <= 2; level++){
+      const r = await callApi(prompt, model, level);
+      if(r.res.ok) return r;
+      last = {...r, model, level};
+      if(r.res.status !== 400 && r.res.status !== 404) return last;  // 400/404以外は即終了
+      if(r.res.status === 404) break;                                 // モデル違い→次のモデルへ
+    }
+  }
+  return last;
 }
 
 async function fetchBatch(note){
@@ -120,12 +135,11 @@ async function fetchBatch(note){
                     : `1番から${BATCH}件書け。1番はwho=0のイッチによる >>1 の本文(スレ立て時のひとこと)。`);
   try{
     if(KEY === 'ここにキー') throw new Error('index.htmlの KEY にAPIキーを入れてな');
-    let r = await callApi(prompt, false);
-    if(r.res.status === 400) r = await callApi(prompt, true);   // 設定を減らして再試行
+    const r = await callWithFallback(prompt);
     if(!r.res.ok){
       if(r.res.status === 429) throw new Error('枠切れ。時間置いてな');
       const e = r.data.error || {};
-      throw new Error(`${e.message || r.res.status}${e.status ? ' ('+e.status+')' : ''}${r.vertex ? ' [Vertex]' : ''}`);
+      throw new Error(`${e.message || r.res.status}${e.status ? ' ('+e.status+')' : ''} [${r.model}/L${r.level}]`);
     }
     const part = r.data.candidates && r.data.candidates[0] && r.data.candidates[0].content
                  && r.data.candidates[0].content.parts && r.data.candidates[0].content.parts[0];
