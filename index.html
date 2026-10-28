@@ -42,7 +42,7 @@ small{color:#666}
 <script>
 (() => {
 const KEY = 'AQ.Ab8RN6JTn1S2dQuQWJjTk-MaawPWJfMZRHpeRBF4OhDDOvIs-A'; // 捨てキー、漏れて当然
-const MODEL = 'gemini-flash-lite-latest';
+const MODEL = 'gemini-2.5-flash';
 const INTERVAL = 5000;   // 1レスの間隔(ms)
 const BATCH = 25;        // 1回のAPI呼び出しで作るレス数
 const MAX_POSTS = 100;   // 枠節約の上限
@@ -66,16 +66,23 @@ const SYSTEM = `あなたは5ch「なんでも実況J(なんJ)」の住民たち
 - 「ｗ」「ｗｗｗ」は全角、語尾は「〜やん」「〜やろ」「〜ンゴ」「〜やで」「〜やな」。
 - 感嘆: 「ファッ!?」「ええぇ…(困惑)」「ンゴォ…」「なお」「(ヽ´ω｀)」。
 - 句読点は少なめ、「、」「。」より改行や空白で区切る。
-- 約3割のレスは安価(>>数字)を付ける。数字は「今ある最後のレス番号以下」だけ。
-  複数の安価(>>3 >>5)や範囲(>>2-4)も混ぜる。
-- 安価への返しは相手の発言を拾ってツッコむ、乗る、ズラすのどれか。
+- 約3割のレスは、前のレスへの返信として "to" に相手のレス番号を入れる(安価)。それ以外は to を null にする。
+  to は「そのレス自身の番号より小さい実在の番号」だけ。2人に返すなら [3,5] のように配列で書く。
+  to に入れた番号のレスの内容を実際に拾って、ツッコむ・乗る・ズラす・補足するのどれかで返すこと。
+- 本文に >>数字 は書かない。安価の表示はプログラムが to から付ける。
 - 流れ: 最初は反応と軽い煽り → 中盤に豆知識や議論 → 後半は脱線(関係ない昔話・別の話題・ネタ合戦)。
 - 同じ住民が3レス連続で出ない。短い即レス(乙/それな)は全体の1割まで。
 - 実在の個人への誹謗中傷、差別、個人情報、過度に露骨な表現は書かない。
 
+【ID】
+- 各住民にはスレ内で固定のIDがある。プロンプトの「住民とIDの対応表」と、レス履歴の ID: で同一人物かどうか判断すること。
+- 同じIDは同一人物。主張・口調・立場を一貫させ、自分の過去レスを拾う、連投で補足する、前の発言と矛盾しない。
+- たまに他人のIDを名指しして「ID:xxxxの奴」「こいつさっきも居たな」とツッコんでよい。IDは対応表にあるものだけを使い、新しいIDを作らない。
+- 「ユーザー」はスレに書き込んでいる生身の人間。AIの住民とは別人として扱い、たまにID付きで話題にしてよい。
+
 【出力】
 次のJSON配列のみ。説明やコードフェンスは付けない。
-[{"who":0,"text":"本文"}]`;
+[{"who":0,"to":null,"text":"本文"}]`;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -83,6 +90,7 @@ const pad = n => String(n).padStart(2,'0');
 const CH = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const rid = () => Array.from({length:8}, () => CH[Math.random()*62|0]).join('');
 const WD = '日月火水木金土';
+const ROLES = ['イッチ','煽り屋','解説ニキ','ネタ師','即レス勢','老害','AA職人','ニュー速民'];
 
 let ids = [], queue = [], shown = [], title = '', timer = null, fetching = false, gen = 0, ended = false;
 
@@ -128,11 +136,16 @@ async function callWithFallback(prompt){
 async function fetchBatch(note){
   const myGen = gen;
   fetching = true;
-  const last = shown.slice(-12).map(p => `${p.no}[${p.who<0?'ユーザー':p.who}] ${p.text}`).join('\n');
-  const prompt = `スレタイ: ${title}\n`
-    + (shown.length ? `今あるレスは${shown.length}番まで。直前の流れ:\n${last}\n\n`
-                      + (note || '') + `${shown.length+1}番から${BATCH}件、続きを書け。`
-                    : `1番から${BATCH}件書け。1番はwho=0のイッチによる >>1 の本文(スレ立て時のひとこと)。`);
+  const base = shown.length + queue.length;   // 先読み分も含めた「次の番号の手前」
+  const idOf = who => ids[who < 0 ? 8 : who] + '0';
+  const all = shown.map(p => ({no:p.no, who:p.who, text:p.text}))
+    .concat(queue.map((q,i) => ({no:shown.length+i+1, who:q.who, text:compose(q, shown.length+i+1)})));
+  const last = all.slice(-15).map(p => `${p.no} ID:${idOf(p.who)}[${p.who<0?'ユーザー':ROLES[p.who]}] ${p.text.replace(/\n/g,' ')}`).join('\n');
+  const table = ROLES.map((r,i) => `${i}=${r} ID:${idOf(i)}`).join(' / ') + ` / ユーザー ID:${idOf(-1)}`;
+  const prompt = `スレタイ: ${title}\n住民とIDの対応表: ${table}\n`
+    + (base ? `今あるレスは${base}番まで。直前の流れ:\n${last}\n\n`
+              + (note || '') + `${base+1}番から${BATCH}件、番号順に続きを書け(1件目が${base+1}番)。to は実在の番号だけを使うこと。`
+            : `1番から${BATCH}件、番号順に書け。1番はwho=0のイッチによるスレ立て時のひとこと(to は null)。`);
   try{
     if(KEY === 'ここにキー') throw new Error('index.htmlの KEY にAPIキーを入れてな');
     const r = await callWithFallback(prompt);
@@ -148,12 +161,19 @@ async function fetchBatch(note){
     txt = txt.slice(txt.indexOf('['), txt.lastIndexOf(']')+1);
     const arr = JSON.parse(txt);
     if(myGen !== gen) return;
-    arr.forEach(p => { if(p && p.text) queue.push({who: Math.min(7, Math.max(0, p.who|0)), text: String(p.text)}); });
+    arr.forEach(p => { if(p && p.text) queue.push({who: Math.min(7, Math.max(0, p.who|0)), text: String(p.text), to: p.to}); });
   }catch(e){
     if(myGen === gen){ setStatus('エラー: ' + e.message); stopThread(true); }
   }finally{
     if(myGen === gen) fetching = false;
   }
+}
+
+function compose(p, no){
+  const raw = Array.isArray(p.to) ? p.to : (p.to == null ? [] : [p.to]);
+  const tos = [...new Set(raw.map(n => parseInt(n,10)).filter(n => n >= 1 && n < no))].slice(0,3);
+  const clean = String(p.text).replace(/>>\d+(-\d+)?[ \t]*/g,'').trim() || '…';
+  return (tos.length ? tos.map(n => '>>'+n).join(' ') + '\n' : '') + clean;
 }
 
 function addPost(p){
@@ -178,7 +198,7 @@ function tick(){
     return;
   }
   const p = queue.shift();
-  const no = addPost(p);
+  const no = addPost({who:p.who, text:compose(p, shown.length+1)});
   if(no >= MAX_POSTS) finish();
 }
 
@@ -191,7 +211,7 @@ function userPost(){
   $('msg').value = '';
   // 先読み分を捨てて、書き込みに反応する続きを作り直す
   gen++; fetching = false; queue = [];
-  fetchBatch(`たった今、ユーザーが${no}番に書き込んだ。次の数レスはその書き込み(>>${no})に反応すること(安価を付けて拾う、ツッコむ、乗る、煽る)。その後は流れに戻る。\n`)
+  fetchBatch(`たった今、ユーザーが${no}番に書き込んだ。次の数レスは to に ${no} を入れて、その書き込みに反応すること(拾う、ツッコむ、乗る、煽る)。その後は流れに戻る。\n`)
     .then(() => { if(!timer && !ended && queue.length) timer = setInterval(tick, INTERVAL); });
 }
 
