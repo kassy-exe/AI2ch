@@ -145,7 +145,7 @@ async function fetchBatch(note){
   const prompt = `スレタイ: ${title}\n住民とIDの対応表: ${table}\n`
     + (base ? `今あるレスは${base}番まで。直前の流れ:\n${last}\n\n`
               + (note || '') + `${base+1}番から${BATCH}件、番号順に続きを書け(1件目が${base+1}番)。to は実在の番号だけを使うこと。`
-            : `1番から${BATCH}件、番号順に書け。1番はwho=0のイッチによるスレ立て時のひとこと(to は null)。`);
+            : `1番から${BATCH}件、番号順に書け。1番はイッチによるスレ立て時のひとこと(to は null)。`);
   try{
     if(KEY === 'ここにキー') throw new Error('index.htmlの KEY にAPIキーを入れてな');
     const r = await callWithFallback(prompt);
