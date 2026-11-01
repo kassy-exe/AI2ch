@@ -27,6 +27,9 @@ small{color:#666}
 #msg{width:72%}
 .no{cursor:pointer}
 #st{color:#666;margin:8px 0}
+#imgfile{display:none}
+#imgStatus{display:none;margin:4px 0 0;color:#080;font-size:12px}
+img.thumb{max-width:360px;max-height:240px;display:block;margin-top:8px;border:1px solid #bbb;background:#fff}
 @media (prefers-reduced-motion:reduce){.new{animation:none}}
 </style></head><body>
 <div>
@@ -37,7 +40,13 @@ small{color:#666}
 <small>5秒に1レス流れる</small>
 <div id="st"></div>
 <div id="out"></div>
-<div id="post"><input id="msg" placeholder="書き込む(番号タップで返信)" onkeydown="if(event.key==='Enter')AI2.post()"><button onclick="AI2.post()">書き込む</button></div>
+<div id="post">
+  <input id="msg" placeholder="書き込む(番号タップで返信)" onkeydown="if(event.key==='Enter')AI2.post()">
+  <button id="pickImage" type="button">画像</button>
+  <button onclick="AI2.post()">書き込む</button>
+  <input id="imgfile" type="file" accept="image/*">
+  <div id="imgStatus">画像を添付済み</div>
+</div>
 
 <script>
 (() => {
@@ -93,6 +102,47 @@ const WD = '日月火水木金土';
 const ROLES = ['境界知能','煽り屋','解説ニキ','ネタ師','即レス勢','老害','AA職人','ニュー速民'];
 
 let ids = [], queue = [], shown = [], title = '', timer = null, fetching = false, gen = 0, ended = false;
+let pendingImage = null;
+
+function toDataUrl(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('画像の読み込みに失敗した')); 
+    reader.readAsDataURL(file);
+  });
+}
+
+function showPendingImageState(){
+  const status = $('imgStatus');
+  if(!pendingImage){ status.style.display = 'none'; return; }
+  status.textContent = `画像を添付済み: ${pendingImage.name}`;
+  status.style.display = 'block';
+}
+
+function clearPendingImage(){
+  pendingImage = null;
+  $('imgfile').value = '';
+  showPendingImageState();
+}
+
+async function handleImageSelect(event){
+  const file = event.target.files && event.target.files[0];
+  if(!file) return;
+  if(!file.type || !file.type.startsWith('image/')){
+    alert('画像ファイルを選んでな');
+    clearPendingImage();
+    return;
+  }
+  try{
+    const dataUrl = await toDataUrl(file);
+    pendingImage = {name: file.name, mimeType: file.type || 'image/png', dataUrl};
+    showPendingImageState();
+  }catch(e){
+    alert(e.message || '画像を読み込めんかった');
+    clearPendingImage();
+  }
+}
 
 function stamp(t){
   return `${t.getFullYear()}/${pad(t.getMonth()+1)}/${pad(t.getDate())}(${WD[t.getDay()]}) `
@@ -103,10 +153,17 @@ function setStatus(s){ $('st').textContent = s; }
 
 const MODELS = [MODEL, 'gemini-flash-latest', 'gemini-2.0-flash'];
 
-async function callApi(prompt, model, level){
+async function callApi(prompt, model, level, imageData = null){
   // level 0: 全部入り / 1: temperature・thinking無し / 2: さらにsystemInstruction・JSON指定も無し
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const body = {contents:[{role:'user', parts:[{text: level >= 2 ? SYSTEM + '\n\n' + prompt : prompt}]}]};
+  const userParts = [];
+  if(imageData){
+    userParts.push({inlineData:{mimeType:imageData.mimeType, data:imageData.data}});
+    userParts.push({text: prompt});
+  }else{
+    userParts.push({text: prompt});
+  }
+  const body = {contents:[{role:'user', parts: userParts}]};
   if(level < 2) body.systemInstruction = {parts:[{text:SYSTEM}]};
   const gc = {};
   if(level < 2) gc.responseMimeType = 'application/json';
@@ -119,11 +176,11 @@ async function callApi(prompt, model, level){
   return {res, data};
 }
 
-async function callWithFallback(prompt){
+async function callWithFallback(prompt, imageData = null){
   let last = null;
   for(const model of MODELS){
     for(let level = 0; level <= 2; level++){
-      const r = await callApi(prompt, model, level);
+      const r = await callApi(prompt, model, level, imageData);
       if(r.res.ok) return r;
       last = {...r, model, level};
       if(r.res.status !== 400 && r.res.status !== 404) return last;  // 400/404以外は即終了
@@ -133,7 +190,7 @@ async function callWithFallback(prompt){
   return last;
 }
 
-async function fetchBatch(note){
+async function fetchBatch(note, imageData = null){
   const myGen = gen;
   fetching = true;
   const base = shown.length + queue.length;   // 先読み分も含めた「次の番号の手前」
@@ -148,7 +205,7 @@ async function fetchBatch(note){
             : `1番から${BATCH}件、番号順に書け。1番はイッチによるスレ立て時のひとこと(to は null)。`);
   try{
     if(KEY === 'ここにキー') throw new Error('index.htmlの KEY にAPIキーを入れてな');
-    const r = await callWithFallback(prompt);
+    const r = await callWithFallback(imageData ? `${prompt}\n\n添付画像を見て、画像に対する反応や解説を含めて続けること。` : prompt, imageData);
     if(!r.res.ok){
       if(r.res.status === 429) throw new Error('枠切れ。時間置いてな');
       const e = r.data.error || {};
@@ -181,9 +238,10 @@ function addPost(p){
   shown.push({no, who:p.who, text:p.text});
   const body = esc(p.text).replace(/&gt;&gt;(\d+)(-\d+)?/g, '<span class="a">&gt;&gt;$1$2</span>');
   const id = ids[p.who < 0 ? 8 : p.who];
+  const imageHtml = p.image ? `<img class="thumb" src="${p.image}">` : '';
   const div = document.createElement('div');
   div.className = 'r new';
-  div.innerHTML = `<div class="hd"><span class="no" data-no="${no}">${no}</span> <span class="n">風吹けば名無し</span>：${stamp(new Date())} ID:${id}0</div><div class="b">${body}</div>`;
+  div.innerHTML = `<div class="hd"><span class="no" data-no="${no}">${no}</span> <span class="n">風吹けば名無し</span>：${stamp(new Date())} ID:${id}0</div><div class="b">${body}${imageHtml}</div>`;
   $('out').appendChild(div);
   window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
   setStatus(`${no}レス`);
@@ -204,14 +262,16 @@ function tick(){
 
 function userPost(){
   const text = $('msg').value.trim();
-  if(!text) return;
+  const imageData = pendingImage ? {mimeType: pendingImage.mimeType, data: pendingImage.dataUrl.split(',')[1]} : null;
+  if(!text && !imageData) return;
   if(!title) return alert('先にスレ立てしてな');
   if(ended) return alert('このスレは終了や');
-  const no = addPost({who:-1, text});
+  const no = addPost({who:-1, text: text || '画像を投稿', image: pendingImage ? pendingImage.dataUrl : null});
   $('msg').value = '';
+  clearPendingImage();
   // 先読み分を捨てて、書き込みに反応する続きを作り直す
   gen++; fetching = false; queue = [];
-  fetchBatch(`たった今、ユーザーが${no}番に書き込んだ。次の数レスは to に ${no} を入れて、その書き込みに反応すること(拾う、ツッコむ、乗る、補足する)。`)
+  fetchBatch(`たった今、ユーザーが${no}番に書き込んだ。次の数レスは to に ${no} を入れて、その書き込みに反応すること(拾う、ツッコむ、乗る、補足する)。`, imageData)
     .then(() => { if(!timer && !ended && queue.length) timer = setInterval(tick, INTERVAL); });
 }
 
@@ -241,6 +301,8 @@ function startThread(){
 }
 if('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
 $('out').addEventListener('click', e => { const n = e.target.dataset && e.target.dataset.no; if(n){ const m = $('msg'); m.value += '>>' + n + ' '; m.focus(); } });
+$('pickImage').addEventListener('click', () => $('imgfile').click());
+$('imgfile').addEventListener('change', handleImageSelect);
 window.AI2 = {start:startThread, stop:() => stopThread(), post:userPost};
 })();
 </script>
