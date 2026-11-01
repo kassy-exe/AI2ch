@@ -45,7 +45,7 @@ const KEY = 'AQ.Ab8RN6JTn1S2dQuQWJjTk-MaawPWJfMZRHpeRBF4OhDDOvIs-A'; // 捨て�
 const MODEL = 'gemini-flash-lite-latest';
 const INTERVAL = 5000;   // 1レスの間隔(ms)
 const BATCH = 25;        // 1回のAPI呼び出しで作るレス数
-const MAX_POSTS = 100;   // 枠節約の上限
+const MAX_POSTS = Infinity; // 100レスを超えても自動終了しない
 
 const SYSTEM = `あなたは5ch「なんでも実況J(なんJ)」の住民たちを演じる脚本家。
 与えられたスレタイと直前の流れに続く書き込みを、指定の件数ぶん書く。
